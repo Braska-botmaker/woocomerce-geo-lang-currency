@@ -1,0 +1,1 @@
+# woocomerce-geo-lang-currency
