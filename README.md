@@ -188,6 +188,13 @@ HOOKS
 2. Nahrajte `.json` soubor (`crx-geo-lang-currency-clone.code-snippets.json`)
 3. Aktivujte snippet
 
+### 🧩 Jako samostatný plugin (PHP soubor)
+
+1. Nahrajte soubor [`crx-geo-lang-currency.php`](crx-geo-lang-currency.php) do `wp-content/plugins/`
+2. WordPress admin → **Plugins** → aktivujte **CRX Geo Lang Currency**
+
+Soubor obsahuje stejný kód jako JSON snippet, jen doplněný o standardní plugin header a `<?php` tag, takže jde nasadit i bez pluginu Code Snippets (např. jako mu-plugin).
+
 ---
 
 ## ⚙️ Konfigurace

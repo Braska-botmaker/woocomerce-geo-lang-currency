@@ -1,0 +1,225 @@
+<?php
+/**
+ * Plugin Name: CRX Geo Lang Currency
+ * Description: Automatické přepínání měny podle geolokace IP a jazyka podle jazyka prohlížeče pro WooCommerce + WPML/WCML.
+ * Version: 2.0.0
+ * Author: CRX
+ */
+
+defined( 'ABSPATH' ) || exit;
+
+/* ------------------------------------------------------------
+ * CONFIG
+ * ------------------------------------------------------------ */
+
+function crx_geo_target_currency( string $country ): string {
+    return ( $country === 'CZ' ) ? 'CZK' : 'EUR';
+}
+
+function crx_geo_cookie_ttl(): int {
+    return DAY_IN_SECONDS * 30;
+}
+
+/* ------------------------------------------------------------
+ * HELPERS
+ * ------------------------------------------------------------ */
+
+function crx_is_bot_request(): bool {
+    $ua = strtolower( $_SERVER['HTTP_USER_AGENT'] ?? '' );
+    if ( $ua === '' ) return false;
+    return (bool) preg_match(
+        '/bot|crawl|slurp|spider|google|bing|yandex|baidu|duckduck|facebookexternalhit|twitterbot|lighthouse|gptbot|chatgpt|claudebot|ccbot|semrush|ahrefs|mj12bot|crawler|monitor|uptime/i',
+        $ua
+    );
+}
+
+function crx_is_front_get(): bool {
+    return ( ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) === 'GET' )
+        && ! is_admin()
+        && ! wp_doing_ajax()
+        && ! wp_doing_cron()
+        && ! wp_is_json_request();
+}
+
+function crx_geo_country(): string {
+    static $country = null;
+    if ( $country !== null ) return $country;
+    if ( ! class_exists( 'WC_Geolocation' ) ) {
+        $country = '';
+        return $country;
+    }
+    $geo     = WC_Geolocation::geolocate_ip();
+    $country = strtoupper( $geo['country'] ?? '' );
+    return $country;
+}
+
+function crx_get_cookie( string $name ): string {
+    return (string) ( $_COOKIE[ $name ] ?? '' );
+}
+
+function crx_get_current_currency_from_cookies(): string {
+    $wcml = crx_get_cookie( 'wcml_client_currency' );
+    $woo  = crx_get_cookie( 'woocommerce_current_currency' );
+    if ( $wcml !== '' && $wcml === $woo ) return $wcml;
+    return '';
+}
+
+/* ------------------------------------------------------------
+ * JS COOKIE HELPERS
+ * ------------------------------------------------------------ */
+
+function crx_output_js_cookie_helpers(): void {
+    static $printed = false;
+    if ( $printed ) return;
+    $printed = true;
+    $ttl = crx_geo_cookie_ttl();
+    ?>
+    <script>
+    (function() {
+        window.crxSetCookie = function(name, value, ttlSeconds) {
+            var exp = new Date();
+            exp.setTime(exp.getTime() + ttlSeconds * 1000);
+            document.cookie = name + '=' + encodeURIComponent(value)
+                + '; expires=' + exp.toUTCString()
+                + '; path=/'
+                + '; secure'
+                + '; SameSite=Lax';
+        };
+        window.crxGetCookie = function(name) {
+            var v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+            return v ? decodeURIComponent(v[2]) : '';
+        };
+        window.crxCookieTtl = <?php echo (int) $ttl; ?>;
+    })();
+    </script>
+    <?php
+}
+
+function crx_set_wcml_runtime_currency( string $currency ): void {
+    if ( $currency === '' ) return;
+    if ( ! isset( $GLOBALS['woocommerce_wpml'] ) || ! is_object( $GLOBALS['woocommerce_wpml'] ) ) return;
+    $wpml_woo = $GLOBALS['woocommerce_wpml'];
+    if (
+        isset( $wpml_woo->multi_currency )
+        && is_object( $wpml_woo->multi_currency )
+        && method_exists( $wpml_woo->multi_currency, 'set_client_currency' )
+    ) {
+        $wpml_woo->multi_currency->set_client_currency( $currency );
+    }
+}
+
+function crx_force_geo_currency( string $currency ): bool {
+    if ( $currency === '' ) return false;
+    crx_set_wcml_runtime_currency( $currency );
+    add_action( 'wp_footer', function() use ( $currency ) {
+        crx_output_js_cookie_helpers();
+        ?>
+        <script>
+        (function() {
+            var c = <?php echo wp_json_encode( $currency ); ?>;
+            if (window.crxGetCookie('wcml_client_currency') !== c) {
+                window.crxSetCookie('wcml_client_currency', c, window.crxCookieTtl);
+            }
+            if (window.crxGetCookie('woocommerce_current_currency') !== c) {
+                window.crxSetCookie('woocommerce_current_currency', c, window.crxCookieTtl);
+            }
+        })();
+        </script>
+        <?php
+    }, 5 );
+    return true;
+}
+
+/* ------------------------------------------------------------
+ * MĚNA: vždy podle geo, na každém requestu
+ * ------------------------------------------------------------ */
+
+add_filter( 'wcml_client_currency', function( $currency ) {
+    if ( is_admin() ) return $currency;
+    if ( crx_is_bot_request() ) return $currency;
+
+    $country = crx_geo_country();
+    if ( $country === '' ) return $currency;
+
+    return crx_geo_target_currency( $country );
+}, 20 );
+
+add_action( 'wp', function () {
+    if ( is_admin() ) return;
+    if ( crx_is_bot_request() ) return;
+
+    $country = crx_geo_country();
+    if ( $country === '' ) return;
+
+    crx_force_geo_currency( crx_geo_target_currency( $country ) );
+}, 10 );
+
+/* ------------------------------------------------------------
+ * JAZYK: detekce podle jazyka prohlížeče, pouze při první návštěvě.
+ * WPML přepínač funguje přirozeně — po přepnutí se uloží cookie
+ * a detekce se už nespustí.
+ * ------------------------------------------------------------ */
+add_action( 'wp_footer', function () {
+    if ( is_admin() ) return;
+    if ( crx_is_bot_request() ) return;
+    if ( ! defined( 'ICL_LANGUAGE_CODE' ) ) return;
+
+    $current_lang = strtolower( ICL_LANGUAGE_CODE );
+    if ( ! in_array( $current_lang, [ 'cs', 'en' ], true ) ) return;
+
+    $ttl = crx_geo_cookie_ttl();
+    ?>
+    <script>
+    (function () {
+        if ( typeof window.crxGetCookie !== 'function' ) return;
+
+        var ttl         = <?php echo (int) $ttl; ?>;
+        var currentLang = <?php echo wp_json_encode( $current_lang ); ?>;
+        var cookieName  = 'crx_manual_lang';
+        var manualLang  = window.crxGetCookie( cookieName );
+
+        if ( manualLang !== currentLang ) {
+            window.crxSetCookie( cookieName, currentLang, ttl );
+            manualLang = currentLang;
+        }
+
+        if ( manualLang !== '' && manualLang === currentLang ) {
+            return;
+        }
+
+        var browserLangs = navigator.languages || [ navigator.language || 'en' ];
+        var targetLang   = 'en';
+
+        for ( var i = 0; i < browserLangs.length; i++ ) {
+            var l = browserLangs[i].toLowerCase();
+            if ( l === 'cs' || l.startsWith('cs-') || l === 'sk' || l.startsWith('sk-') ) {
+                targetLang = 'cs';
+                break;
+            }
+        }
+
+        window.crxSetCookie( cookieName, targetLang, ttl );
+
+        if ( currentLang !== targetLang ) {
+            var links = document.querySelectorAll(
+                'a[hreflang="' + targetLang + '"]'
+            );
+            if ( links.length > 0 ) {
+                window.location.href = links[0].href;
+                return;
+            }
+
+            var url = window.location.href;
+            if ( targetLang === 'en' ) {
+                url = url.replace( /\/(cs)(\/|$)/, '/en$2' );
+            } else {
+                url = url.replace( /\/(en)(\/|$)/, '/cs$2' );
+            }
+            if ( url !== window.location.href ) {
+                window.location.href = url;
+            }
+        }
+    })();
+    </script>
+    <?php
+}, 20 );
