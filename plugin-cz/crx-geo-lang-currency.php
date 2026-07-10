@@ -110,7 +110,14 @@ function crx_set_wcml_runtime_currency( string $currency ): void {
 
 function crx_force_geo_currency( string $currency ): bool {
     if ( $currency === '' ) return false;
-    crx_set_wcml_runtime_currency( $currency );
+    // Deliberately NOT calling crx_set_wcml_runtime_currency() here: the
+    // wcml_client_currency filter below already sets the correct currency
+    // during WCML's own currency resolution (on init). Calling
+    // set_client_currency() again here, later in the same request, makes
+    // WCML think the currency just changed and empties the cart - which is
+    // exactly what happens on a non-AJAX add-to-cart (WooCommerce adds the
+    // item on wp_loaded, then this 'wp' hook fires straight after, in the
+    // same request, and used to call set_client_currency() a second time).
     add_action( 'wp_footer', function() use ( $currency ) {
         crx_output_js_cookie_helpers();
         ?>
@@ -146,18 +153,18 @@ add_filter( 'wcml_client_currency', function( $currency ) {
 
 add_action( 'wp', function () {
     if ( is_admin() ) return;
-    // Skip AJAX requests (this includes wc-ajax=add_to_cart): the
-    // wcml_client_currency filter above already set the correct currency
-    // during init, before WooCommerce processed the cart action. Calling
-    // set_client_currency() again here, mid-request, makes WCML think the
-    // currency just changed and empties the cart it was just added to.
-    if ( wp_doing_ajax() ) return;
+    if ( wp_doing_ajax() ) return; // no wp_footer on AJAX responses, nothing to schedule
     if ( crx_is_bot_request() ) return;
 
     $country = crx_geo_country();
     if ( $country === '' ) return;
 
-    crx_force_geo_currency( crx_geo_target_currency( $country ) );
+    $target = crx_geo_target_currency( $country );
+
+    // Cookies already match - nothing to sync.
+    if ( crx_get_current_currency_from_cookies() === $target ) return;
+
+    crx_force_geo_currency( $target );
 }, 10 );
 
 /* ------------------------------------------------------------

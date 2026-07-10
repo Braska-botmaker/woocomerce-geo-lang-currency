@@ -79,6 +79,13 @@ function crx_glc_get_cookie( string $name ): string {
     return (string) ( $_COOKIE[ $name ] ?? '' );
 }
 
+function crx_glc_get_current_currency_from_cookies(): string {
+    $wcml = crx_glc_get_cookie( 'wcml_client_currency' );
+    $woo  = crx_glc_get_cookie( 'woocommerce_current_currency' );
+    if ( $wcml !== '' && $wcml === $woo ) return $wcml;
+    return '';
+}
+
 /* ------------------------------------------------------------
  * JS COOKIE HELPERS
  * ------------------------------------------------------------ */
@@ -129,7 +136,11 @@ function crx_glc_set_wcml_runtime_currency( string $currency ): void {
 
 function crx_glc_force_geo_currency( string $currency ): void {
     if ( $currency === '' ) return;
-    crx_glc_set_wcml_runtime_currency( $currency );
+    // Deliberately NOT calling crx_glc_set_wcml_runtime_currency() here:
+    // the wcml_client_currency filter below already sets the correct
+    // currency during WCML's own currency resolution (on init). Calling
+    // set_client_currency() again here, later in the same request, makes
+    // WCML think the currency just changed and empties the cart.
     add_action( 'wp_footer', function () use ( $currency ) {
         crx_glc_output_js_cookie_helpers();
         ?>
@@ -167,16 +178,16 @@ add_filter( 'wcml_client_currency', function ( $currency ) {
 // still sees the correct value.
 add_action( 'wp', function () {
     if ( is_admin() ) return;
-    // Skip AJAX requests (this includes wc-ajax=add_to_cart): the
-    // wcml_client_currency filter above already set the correct currency
-    // during init, before WooCommerce processed the cart action. Calling
-    // set_client_currency() again here, mid-request, makes WCML think the
-    // currency just changed and empties the cart it was just added to.
-    if ( wp_doing_ajax() ) return;
+    if ( wp_doing_ajax() ) return; // no wp_footer on AJAX responses, nothing to schedule
     if ( crx_glc_is_bot_request() ) return;
 
     $country = crx_glc_country();
     if ( $country === '' ) return;
 
-    crx_glc_force_geo_currency( crx_glc_target_currency( $country ) );
+    $target = crx_glc_target_currency( $country );
+
+    // Cookies already match - nothing to sync.
+    if ( crx_glc_get_current_currency_from_cookies() === $target ) return;
+
+    crx_glc_force_geo_currency( $target );
 }, 10 );
