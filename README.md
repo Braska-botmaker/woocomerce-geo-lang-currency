@@ -242,6 +242,17 @@ HOOKS
 
 ---
 
+## 🐛 Reporting bugs
+
+Found a bug or unexpected behavior? Open an [issue on GitHub](https://github.com/Braska-botmaker/woocomerce-geo-lang-currency/issues). To make it fixable, please include:
+
+- Which variant you're using (`plugin/` universal or `plugin-cz/` legacy)
+- WordPress, WooCommerce, WPML and WCML versions
+- Your `crx_glc_config` filter, if you've customized it
+- Steps to reproduce (ideally including the country/IP or browser language involved) and what you expected vs. what happened
+
+---
+
 ## 👤 Author & credits
 
 Created and maintained by **Matěj Horák**.
